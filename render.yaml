@@ -1,0 +1,19 @@
+# Despliegue en Render (https://render.com) — el más simple para obtener una URL pública HTTPS.
+# Sube este repo a GitHub, en Render elige "New > Blueprint" y apunta a este archivo.
+services:
+  - type: web
+    name: sharepoint-onedrive-mcp
+    runtime: docker
+    plan: starter        # 'free' también sirve para probar (se duerme por inactividad)
+    healthCheckPath: /health
+    envVars:
+      - key: AUTH_MODE
+        value: delegated
+      - key: TENANT_ID
+        value: organizations
+      - key: CLIENT_ID
+        sync: false       # se define en el panel de Render (secreto)
+      - key: GRAPH_REFRESH_TOKEN
+        sync: false
+      - key: MCP_AUTH_TOKEN
+        sync: false

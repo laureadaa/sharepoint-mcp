@@ -1,0 +1,19 @@
+{
+  "name": "sharepoint-onedrive-mcp",
+  "version": "1.0.0",
+  "description": "Servidor MCP remoto con lectura+escritura sobre SharePoint y OneDrive vía Microsoft Graph. Auth delegada (Device Code, sin admin) o app-only (Client Credentials).",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "login": "node src/login.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^5.0.0",
+    "zod": "^3.23.0"
+  }
+}
