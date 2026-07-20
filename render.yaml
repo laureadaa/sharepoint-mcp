@@ -4,7 +4,7 @@ services:
   - type: web
     name: sharepoint-onedrive-mcp
     runtime: docker
-    plan: starter        # 'free' también sirve para probar (se duerme por inactividad)
+    plan: free           # gratis (se duerme por inactividad; se mantiene despierto con un pinger)
     healthCheckPath: /health
     envVars:
       - key: AUTH_MODE
@@ -12,8 +12,10 @@ services:
       - key: TENANT_ID
         value: organizations
       - key: CLIENT_ID
-        sync: false       # se define en el panel de Render (secreto)
+        value: 14d82eec-204b-4c2f-b7e8-296a70dab67e   # cliente público oficial de Graph CLI (no es secreto)
+      - key: BLOCK_ONEDRIVE
+        value: "true"     # bloquea el OneDrive personal; SharePoint libre
       - key: GRAPH_REFRESH_TOKEN
-        sync: false
+        sync: false        # secreto: se pega en el panel de Render
       - key: MCP_AUTH_TOKEN
-        sync: false
+        sync: false        # secreto: se pega en el panel de Render

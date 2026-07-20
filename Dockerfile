@@ -10,7 +10,7 @@ RUN npm install --omit=dev
 COPY src ./src
 
 ENV NODE_ENV=production
-ENV PORT=3000
+# No fijamos PORT: el host (Render) inyecta su propio PORT y el servidor lo respeta.
 EXPOSE 3000
 
 CMD ["node", "src/server.js"]
