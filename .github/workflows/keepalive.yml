@@ -1,0 +1,12 @@
+name: keep-alive
+# "Despertador": hace ping a /health cada ~10 min para que Render (plan free) no se duerma.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health
+        run: curl -sS --max-time 60 https://sharepoint-onedrive-mcp.onrender.com/health || true
