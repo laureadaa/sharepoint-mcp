@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { registerTools } from "./tools.js";
+import { forceRefresh } from "./auth.js";
 import { MCP_AUTH_TOKEN, PORT, AUTH_MODE, validateStartup } from "./config.js";
 
 const startupErrors = validateStartup();
@@ -34,7 +35,23 @@ function authorized(req) {
 const app = express();
 app.use(express.json({ limit: "12mb" }));
 
-app.get("/health", (_req, res) => res.json({ status: "ok", mode: AUTH_MODE }));
+// Renovación periódica del refresh token (sólo modo delegado) para que no caduque por inactividad.
+const REFRESH_EVERY_MS = 12 * 60 * 60 * 1000;
+// Sólo estado ok/fecha: /health es público, el detalle del error va al log.
+const tokenStatus = { ok: null, lastRefresh: null };
+
+async function keepTokenAlive() {
+  try {
+    await forceRefresh();
+    tokenStatus.ok = true;
+  } catch (e) {
+    tokenStatus.ok = false;
+    console.error("[auth] Fallo renovando el token:", e.message);
+  }
+  tokenStatus.lastRefresh = new Date().toISOString();
+}
+
+app.get("/health", (_req, res) => res.json({ status: "ok", mode: AUTH_MODE, token: tokenStatus }));
 
 async function handleMcp(req, res) {
   if (!authorized(req)) {
@@ -83,4 +100,8 @@ app.listen(PORT, () => {
   // Pista para no loguear el token entero.
   console.log(`[sharepoint-mcp] Token de acceso configurado (longitud ${MCP_AUTH_TOKEN.length}).`);
   void randomUUID; // reservado por si se activa modo con estado
+  if (AUTH_MODE === "delegated") {
+    void keepTokenAlive();
+    setInterval(keepTokenAlive, REFRESH_EVERY_MS);
+  }
 });

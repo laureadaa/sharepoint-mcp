@@ -90,6 +90,14 @@ async function getDelegatedToken() {
   return cachedAccessToken;
 }
 
+// Fuerza una renovación con el refresh token aunque el access token siga vigente.
+// Microsoft invalida el refresh token tras 90 días sin uso; renovarlo a menudo lo mantiene vivo.
+export async function forceRefresh() {
+  cachedAccessToken = null;
+  cachedExpiresAt = 0;
+  return getAccessToken();
+}
+
 export async function getAccessToken() {
   if (cachedAccessToken && Date.now() < cachedExpiresAt) return cachedAccessToken;
   return AUTH_MODE === "app" ? getAppToken() : getDelegatedToken();
