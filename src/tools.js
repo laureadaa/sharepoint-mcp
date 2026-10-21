@@ -7,6 +7,22 @@ import { AUTH_MODE } from "./config.js";
 const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data, null, 2) }] });
 const fail = (e) => ({ isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] });
 
+// Registro de auditoría de las operaciones que modifican datos (va a los logs del host).
+function audit(action, details, error) {
+  console.log(JSON.stringify({ audit: action, at: new Date().toISOString(), ok: !error, ...details, ...(error && { error: error.message }) }));
+}
+
+async function write(action, details, fn) {
+  try {
+    const result = await fn();
+    audit(action, details);
+    return ok(result);
+  } catch (e) {
+    audit(action, details, e);
+    return fail(e);
+  }
+}
+
 // `ref` acepta una ruta ("/Documentos/informe.docx") o un id ("id:01ABC...").
 const refDesc =
   "Referencia al item: una ruta relativa a la raíz del drive (ej. '/Carpeta/archivo.docx') o un id con prefijo 'id:' (ej. 'id:01ABC...'). Usa '/' o 'root' para la raíz.";
@@ -74,11 +90,12 @@ export function registerTools(server) {
       inputSchema: {
         driveId: z.string().describe(driveDesc),
         ref: z.string().default("root").describe(refDesc),
+        limit: z.number().int().min(1).max(2000).default(500).describe("Máximo de elementos a devolver."),
       },
     },
-    async ({ driveId, ref }) => {
+    async ({ driveId, ref, limit }) => {
       try {
-        return ok(await graph.listChildren(driveId, ref));
+        return ok(await graph.listChildren(driveId, ref, limit));
       } catch (e) {
         return fail(e);
       }
@@ -142,17 +159,20 @@ export function registerTools(server) {
     {
       title: "Leer archivo",
       description:
-        "Descarga el contenido de un archivo. Por defecto lo devuelve como texto UTF-8; usa as_base64=true para binarios (imágenes, PDF, docx...).",
+        "Lee un archivo. Con format='auto' (por defecto) devuelve el TEXTO de Word, Excel, PowerPoint y PDF ya extraído, por páginas, y los archivos de texto tal cual. Usa format='base64' para obtener los bytes originales. Máximo 25 MB.",
       inputSchema: {
         driveId: z.string().describe(driveDesc),
         ref: z.string().describe(refDesc),
-        as_base64: z.boolean().default(false).describe("Devolver el contenido en base64 (para archivos binarios)."),
+        format: z
+          .enum(["auto", "text", "base64"])
+          .default("auto")
+          .describe("'auto': extrae el texto de documentos; 'text': decodifica como UTF-8; 'base64': bytes originales."),
+        as_base64: z.boolean().optional().describe("Obsoleto: equivale a format='base64'."),
       },
     },
-    async ({ driveId, ref, as_base64 }) => {
+    async ({ driveId, ref, format, as_base64 }) => {
       try {
-        const content = await graph.readFile(driveId, ref, as_base64);
-        return ok({ ref, encoding: as_base64 ? "base64" : "utf8", content });
+        return ok({ ref, ...(await graph.readFile(driveId, ref, as_base64 ? "base64" : format)) });
       } catch (e) {
         return fail(e);
       }
@@ -164,7 +184,7 @@ export function registerTools(server) {
     {
       title: "Subir / crear / sobrescribir archivo",
       description:
-        "Crea o sobrescribe un archivo (<4MB) en una carpeta. Para texto pasa `content`; para binarios pasa `content` en base64 y is_base64=true.",
+        "Crea o sobrescribe un archivo en una carpeta (los de más de 4 MB se suben por partes automáticamente). Para texto pasa `content`; para binarios pasa `content` en base64 y is_base64=true.",
       inputSchema: {
         driveId: z.string().describe(driveDesc),
         parent: z.string().default("root").describe("Carpeta destino (ruta o id). 'root' para la raíz."),
@@ -173,13 +193,8 @@ export function registerTools(server) {
         is_base64: z.boolean().default(false).describe("El contenido viene en base64."),
       },
     },
-    async ({ driveId, parent, name, content, is_base64 }) => {
-      try {
-        return ok(await graph.uploadFile(driveId, parent, name, content, is_base64));
-      } catch (e) {
-        return fail(e);
-      }
-    }
+    async ({ driveId, parent, name, content, is_base64 }) =>
+      write("upload_file", { driveId, parent, name }, () => graph.uploadFile(driveId, parent, name, content, is_base64))
   );
 
   server.registerTool(
@@ -193,13 +208,8 @@ export function registerTools(server) {
         name: z.string().describe("Nombre de la nueva carpeta."),
       },
     },
-    async ({ driveId, parent, name }) => {
-      try {
-        return ok(await graph.createFolder(driveId, parent, name));
-      } catch (e) {
-        return fail(e);
-      }
-    }
+    async ({ driveId, parent, name }) =>
+      write("create_folder", { driveId, parent, name }, () => graph.createFolder(driveId, parent, name))
   );
 
   server.registerTool(
@@ -209,13 +219,8 @@ export function registerTools(server) {
       description: "Envía un archivo o carpeta a la papelera de reciclaje.",
       inputSchema: { driveId: z.string().describe(driveDesc), ref: z.string().describe(refDesc) },
     },
-    async ({ driveId, ref }) => {
-      try {
-        return ok(await graph.deleteItem(driveId, ref));
-      } catch (e) {
-        return fail(e);
-      }
-    }
+    async ({ driveId, ref }) =>
+      write("delete_item", { driveId, ref }, () => graph.deleteItem(driveId, ref))
   );
 
   server.registerTool(
@@ -230,13 +235,8 @@ export function registerTools(server) {
         new_name: z.string().optional().describe("Nuevo nombre (opcional)."),
       },
     },
-    async ({ driveId, ref, new_parent, new_name }) => {
-      try {
-        return ok(await graph.moveItem(driveId, ref, new_parent, new_name));
-      } catch (e) {
-        return fail(e);
-      }
-    }
+    async ({ driveId, ref, new_parent, new_name }) =>
+      write("move_item", { driveId, ref, new_parent, new_name }, () => graph.moveItem(driveId, ref, new_parent, new_name))
   );
 
   server.registerTool(
@@ -251,13 +251,8 @@ export function registerTools(server) {
         new_name: z.string().optional().describe("Nuevo nombre (opcional)."),
       },
     },
-    async ({ driveId, ref, new_parent, new_name }) => {
-      try {
-        return ok(await graph.copyItem(driveId, ref, new_parent, new_name));
-      } catch (e) {
-        return fail(e);
-      }
-    }
+    async ({ driveId, ref, new_parent, new_name }) =>
+      write("copy_item", { driveId, ref, new_parent, new_name }, () => graph.copyItem(driveId, ref, new_parent, new_name))
   );
 
   server.registerTool(
@@ -271,12 +266,7 @@ export function registerTools(server) {
         type: z.enum(["view", "edit"]).default("view").describe("Tipo de enlace: 'view' o 'edit'."),
       },
     },
-    async ({ driveId, ref, type }) => {
-      try {
-        return ok(await graph.createShareLink(driveId, ref, type));
-      } catch (e) {
-        return fail(e);
-      }
-    }
+    async ({ driveId, ref, type }) =>
+      write("create_share_link", { driveId, ref, type }, () => graph.createShareLink(driveId, ref, type))
   );
 }

@@ -144,7 +144,7 @@ Usará `search_sites` → `list_drives` → `list_children`.
 **3. Leer un documento real:**
 > "Lee el archivo 'Notas.txt' que está en la raíz de mi OneDrive y resúmelo."
 
-Usará `read_file`. (Para .docx/.pdf pídele leerlo en base64 o convertirlo.)
+Usará `read_file`, que extrae directamente el texto de Word, Excel, PowerPoint y PDF.
 
 **4. Primera escritura (empieza con algo inocuo):**
 > "Crea una carpeta llamada 'Pruebas Claude' en mi OneDrive y dentro sube un archivo
@@ -200,5 +200,8 @@ Si prefieres que funcione sin ningún login de usuario y sin caducidad:
 - **`invalid_grant` / el login caducó:** vuelve a ejecutar `npm run login` y actualiza
   `GRAPH_REFRESH_TOKEN`. Ocurre si el token estuvo inactivo mucho tiempo o cambiaste la contraseña.
 - **`AADSTS7000218` al hacer login:** falta activar *Permitir flujos de cliente público = Sí*.
-- **Archivos grandes (>4MB):** este servidor sube archivos pequeños por sencillez; para archivos
-  grandes habría que añadir sesiones de subida por fragmentos (se puede ampliar).
+- **Archivos grandes (>4MB):** se suben automáticamente por trozos (sesión de subida de Graph).
+- **Token caducado:** el servidor renueva el token cada 12 h y `/health` muestra `token.ok`; si pasa a
+  `false`, el workflow keep-alive falla y GitHub avisa por email.
+- **Auditoría:** cada subida, borrado, movimiento, copia o enlace compartido deja una línea
+  `{"audit": ...}` en los logs del servidor.

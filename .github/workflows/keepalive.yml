@@ -1,5 +1,6 @@
 name: keep-alive
-# "Despertador": hace ping a /health cada ~10 min para que Render (plan free) no se duerma.
+# "Despertador": hace ping a /health cada ~5 min para que Render (plan free) no se duerma.
+# Si el token de Microsoft deja de funcionar (token.ok = false) el job falla y GitHub avisa por email.
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -8,5 +9,11 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping health
-        run: curl -sS --max-time 60 https://sharepoint-onedrive-mcp.onrender.com/health || true
+      - name: Ping health y comprobar token
+        run: |
+          body=$(curl -sS --max-time 60 https://sharepoint-onedrive-mcp.onrender.com/health || true)
+          echo "$body"
+          if [ "$(echo "$body" | jq -r '.token.ok // empty' 2>/dev/null)" = "false" ]; then
+            echo "::error::El token de Microsoft ha caducado o falla. Hay que repetir el login (npm run login) y actualizar GRAPH_REFRESH_TOKEN en Render."
+            exit 1
+          fi

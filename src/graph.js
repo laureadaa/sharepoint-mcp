@@ -27,24 +27,64 @@ function ensureDriveAllowed(driveId) {
   }
 }
 
-async function graphFetch(path, { method = "GET", query, json, rawBody, contentType } = {}) {
-  const token = await getAccessToken();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
+const MAX_RETRIES = 4;
+const REQUEST_TIMEOUT_MS = 60_000;
+
+// Límites de tamaño: la subida simple de Graph admite hasta 4 MB; por encima, sesión por trozos.
+const SIMPLE_UPLOAD_MAX = 4 * 1024 * 1024;
+const CHUNK_SIZE = 5 * 1024 * 1024; // múltiplo de 320 KiB, como exige Graph
+const READ_MAX_BYTES = 25 * 1024 * 1024;
+const TEXT_MAX_CHARS = 200_000;
+
+// Petición a Graph con reintentos ante limitación (429) y errores transitorios (5xx),
+// respetando Retry-After. `auth: false` para URLs pre-firmadas (sesiones de subida).
+async function graphFetch(path, { method = "GET", query, json, rawBody, contentType, headers: extra, auth = true } = {}) {
   let url = path.startsWith("http") ? path : `${GRAPH_BASE}${path}`;
   if (query) {
     const qs = new URLSearchParams(query).toString();
     url += (url.includes("?") ? "&" : "?") + qs;
   }
-  const headers = { Authorization: `Bearer ${token}` };
   let body;
+  const baseHeaders = { ...extra };
   if (json !== undefined) {
-    headers["Content-Type"] = "application/json";
+    baseHeaders["Content-Type"] = "application/json";
     body = JSON.stringify(json);
   } else if (rawBody !== undefined) {
-    headers["Content-Type"] = contentType || "application/octet-stream";
+    baseHeaders["Content-Type"] = contentType || "application/octet-stream";
     body = rawBody;
   }
-  const res = await fetch(url, { method, headers, body });
-  return res;
+
+  for (let attempt = 0; ; attempt++) {
+    const headers = auth ? { ...baseHeaders, Authorization: `Bearer ${await getAccessToken()}` } : baseHeaders;
+    let res;
+    try {
+      res = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    } catch (e) {
+      if (attempt >= MAX_RETRIES) throw new Error(`Sin respuesta de Microsoft Graph: ${e.message}`);
+      await sleep(backoff(attempt));
+      continue;
+    }
+    if (!RETRY_STATUS.has(res.status) || attempt >= MAX_RETRIES) return res;
+    const retryAfter = Number(res.headers.get("retry-after"));
+    await res.body?.cancel().catch(() => {});
+    await sleep(retryAfter > 0 ? Math.min(retryAfter, 60) * 1000 : backoff(attempt));
+  }
+}
+
+const backoff = (attempt) => 1000 * 2 ** attempt + Math.random() * 500;
+
+// Sigue @odata.nextLink hasta reunir `limit` elementos.
+async function graphList(path, opts, limit = 500) {
+  const items = [];
+  let data = await graphJson(path, opts);
+  items.push(...(data.value || []));
+  while (data["@odata.nextLink"] && items.length < limit) {
+    data = await graphJson(data["@odata.nextLink"]);
+    items.push(...(data.value || []));
+  }
+  return { items: items.slice(0, limit), truncated: items.length > limit || !!data["@odata.nextLink"] };
 }
 
 async function graphJson(path, opts) {
@@ -84,7 +124,8 @@ function itemSelector(driveId, ref) {
   if (!ref || ref === "/" || ref === "root") return `${base}/root`;
   if (ref.startsWith("id:")) return `${base}/items/${encodeURIComponent(ref.slice(3))}`;
   const clean = ref.replace(/^\/+/, "");
-  return `${base}/root:/${clean.split("/").map(encodeURIComponent).join("/")}`;
+  // Forma documentada de Graph: root:/ruta: (los ':' cierran la ruta antes de /children, /content…).
+  return `${base}/root:/${clean.replace(/\/+$/, "").split("/").map(encodeURIComponent).join("/")}:`;
 }
 
 export const graph = {
@@ -116,13 +157,15 @@ export const graph = {
     }));
   },
 
-  // Lista el contenido de una carpeta.
-  async listChildren(driveId, ref) {
+  // Lista el contenido de una carpeta (todas las páginas, hasta `limit`).
+  async listChildren(driveId, ref, limit = 500) {
     const sel = itemSelector(driveId, ref);
-    const data = await graphJson(`${sel}/children`, {
-      query: { $select: "id,name,size,folder,file,webUrl,lastModifiedDateTime" },
-    });
-    return (data.value || []).map(mapItem);
+    const { items, truncated } = await graphList(
+      `${sel}/children`,
+      { query: { $select: "id,name,size,folder,file,webUrl,lastModifiedDateTime,parentReference", $top: "200" } },
+      limit
+    );
+    return { count: items.length, truncated, items: items.map(mapItem) };
   },
 
   // Metadatos de un item.
@@ -134,8 +177,10 @@ export const graph = {
   // Busca archivos dentro de un drive.
   async searchFiles(driveId, queryText) {
     const base = driveRoot(driveId);
-    const data = await graphJson(`${base}/root/search(q='${encodeURIComponent(queryText)}')`);
-    return (data.value || []).map(mapItem);
+    // En OData las comillas simples se escapan duplicándolas (ej. D'Amico → D''Amico).
+    const q = encodeURIComponent(String(queryText).replace(/'/g, "''"));
+    const { items } = await graphList(`${base}/root/search(q='${q}')`, undefined, 200);
+    return items.map(mapItem);
   },
 
   // Búsqueda GLOBAL en TODO: OneDrive + todas las bibliotecas de SharePoint a la vez.
@@ -177,31 +222,76 @@ export const graph = {
     return results;
   },
 
-  // Descarga el contenido de un archivo como texto (o base64 si no es texto).
-  async readFile(driveId, ref, asBase64 = false) {
+  // Lee un archivo. format:
+  //   "auto"   → texto plano tal cual; Word/Excel/PowerPoint/PDF… se extrae su texto.
+  //   "text"   → fuerza decodificar como UTF-8.
+  //   "base64" → bytes originales en base64.
+  async readFile(driveId, ref, format = "auto") {
     const sel = itemSelector(driveId, ref);
-    const res = await graphFetch(`${sel}/content`);
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      throw new Error(`Graph ${res.status} al leer archivo: ${t}`);
+    const meta = await graphJson(sel, { query: { $select: "id,name,size,file,folder" } });
+    if (meta.folder) throw new Error("Es una carpeta, no un archivo. Usa list_children.");
+    if (meta.size > READ_MAX_BYTES) {
+      throw new Error(`Archivo demasiado grande para leerlo (${mb(meta.size)} MB; máximo ${mb(READ_MAX_BYTES)} MB).`);
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    return asBase64 ? buf.toString("base64") : buf.toString("utf8");
+    const ext = (meta.name.match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
+    const base = { name: meta.name, size: meta.size, mimeType: meta.file?.mimeType };
+
+    if (format === "base64") {
+      return { ...base, encoding: "base64", content: (await download(`${sel}/content`)).toString("base64") };
+    }
+    if (format === "auto" && (ext === "pdf" || PDF_CONVERTIBLE.has(ext))) {
+      // Office → PDF lo convierte el propio SharePoint; luego extraemos el texto del PDF.
+      const pdf = await download(ext === "pdf" ? `${sel}/content` : `${sel}/content?format=pdf`);
+      const { extractText } = await import("unpdf");
+      const { totalPages, text } = await extractText(new Uint8Array(pdf), { mergePages: false });
+      const joined = text.map((t, i) => `--- Página ${i + 1} ---\n${t.trim()}`).join("\n\n");
+      return { ...base, encoding: "text", extractedFrom: ext, pages: totalPages, ...clip(joined) };
+    }
+    if (format === "auto" && BINARY_EXT.has(ext)) {
+      throw new Error(`'${meta.name}' es binario y no se puede leer como texto. Usa format="base64".`);
+    }
+    return { ...base, encoding: "utf8", ...clip((await download(`${sel}/content`)).toString("utf8")) };
   },
 
-  // Sube/crea o sobrescribe un archivo pequeño (<4MB) por ruta.
+  // Crea o sobrescribe un archivo. Hasta 4 MB subida directa; por encima, sesión por trozos.
   async uploadFile(driveId, parentRef, name, content, isBase64 = false) {
-    const base = driveRoot(driveId);
-    const parent = !parentRef || parentRef === "/" || parentRef === "root" ? "" : parentRef.replace(/^\/+/, "") + "/";
-    const fullPath = `${parent}${name}`;
-    const url = `${base}/root:/${fullPath.split("/").map(encodeURIComponent).join("/")}:/content`;
+    const parentSel = itemSelector(driveId, parentRef);
+    // Carpeta por ruta (root:/A/B:) → root:/A/B/nombre: ; raíz o id (items/XYZ) → …:/nombre:
+    const target = parentSel.endsWith(":")
+      ? `${parentSel.slice(0, -1)}/${encodeURIComponent(name)}:`
+      : `${parentSel}:/${encodeURIComponent(name)}:`;
     const body = isBase64 ? Buffer.from(content, "base64") : Buffer.from(content, "utf8");
-    const data = await graphJson(url, {
-      method: "PUT",
-      rawBody: body,
-      contentType: "application/octet-stream",
+
+    if (body.length <= SIMPLE_UPLOAD_MAX) {
+      const data = await graphJson(`${target}/content`, {
+        method: "PUT",
+        rawBody: body,
+        contentType: "application/octet-stream",
+      });
+      return mapItem(data);
+    }
+
+    const session = await graphJson(`${target}/createUploadSession`, {
+      method: "POST",
+      json: { item: { "@microsoft.graph.conflictBehavior": "replace" } },
     });
-    return mapItem(data);
+    let last;
+    for (let start = 0; start < body.length; start += CHUNK_SIZE) {
+      const chunk = body.subarray(start, Math.min(start + CHUNK_SIZE, body.length));
+      // La URL de sesión ya va firmada: no se envía Authorization.
+      last = await graphFetch(session.uploadUrl, {
+        method: "PUT",
+        auth: false,
+        rawBody: chunk,
+        headers: { "Content-Range": `bytes ${start}-${start + chunk.length - 1}/${body.length}` },
+      });
+      if (!last.ok) {
+        const t = await last.text().catch(() => "");
+        await fetch(session.uploadUrl, { method: "DELETE" }).catch(() => {});
+        throw new Error(`Graph ${last.status} subiendo el trozo que empieza en ${start}: ${t}`);
+      }
+    }
+    return mapItem(await last.json());
   },
 
   // Crea una carpeta.
@@ -259,6 +349,33 @@ export const graph = {
     return { url: data?.link?.webUrl, type, scope: data?.link?.scope };
   },
 };
+
+// Formatos que SharePoint sabe convertir a PDF (?format=pdf).
+const PDF_CONVERTIBLE = new Set([
+  "doc", "docx", "docm", "dot", "dotx", "rtf", "odt",
+  "xls", "xlsx", "xlsm", "xlsb", "ods",
+  "ppt", "pptx", "pptm", "pps", "ppsx", "odp",
+]);
+const BINARY_EXT = new Set([
+  "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "heic",
+  "zip", "rar", "7z", "exe", "dll", "msg", "mp3", "mp4", "mov", "avi", "wav",
+]);
+
+const mb = (n) => (n / 1024 / 1024).toFixed(1);
+
+function clip(text) {
+  if (text.length <= TEXT_MAX_CHARS) return { content: text };
+  return { content: text.slice(0, TEXT_MAX_CHARS), truncated: true, totalChars: text.length };
+}
+
+async function download(path) {
+  const res = await graphFetch(path);
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Graph ${res.status} al leer archivo: ${t}`);
+  }
+  return Buffer.from(await res.arrayBuffer());
+}
 
 function mapItem(i) {
   if (!i) return i;
