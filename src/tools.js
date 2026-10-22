@@ -29,7 +29,38 @@ const refDesc =
 const driveDesc =
   "ID del drive (biblioteca de documentos). Usa 'me' para tu OneDrive (sólo en modo delegado), o un driveId obtenido con list_drives.";
 
+export const GUIDE_URL = "https://claude.ai/artifact/M6MM16YqBUtu5F9yoXqD9b";
+
+const GUIDE_TEXT = `Guía del conector SharePoint (versión completa con ejemplos: ${GUIDE_URL})
+
+Qué puedes pedir, con palabras normales:
+- Buscar en todo SharePoint: "Busca la carpeta del cliente…".
+- Ver una carpeta: "¿Qué hay en Fiscal › Impuestos de este cliente?".
+- Leer Word, PDF y PowerPoint: "Resume el informe…", "¿qué dice la cláusula 5…?".
+- Consultar un Excel como tabla: "Lee la hoja Balance del sumas y saldos de 2025".
+- Lo último modificado: "¿Qué se ha movido esta semana en este cliente?".
+- Versiones: "¿Quién cambió este Excel?", "vuelve a la versión de ayer" (pide confirmación; no se pierde nada).
+- Accesos: "¿Quién tiene acceso a esta carpeta?", "quita el enlace público".
+- Subir, crear carpetas, mover, renombrar, copiar, compartir y borrar (el borrado va a la papelera de SharePoint).
+
+Consejos: nombra el cliente y el documento como en el despacho, di qué quieres hacer con él y, en Excel, indica la hoja.
+
+Límites: todo se hace con la cuenta del despacho (la cuenta de administración); el OneDrive personal está bloqueado; los PDF escaneados sin texto no se pueden leer; máximo 25 MB por archivo; los archivos recién subidos tardan unos minutos en salir en búsquedas.
+
+Si falla: con "no encuentro el archivo", prueba otra palabra o di la carpeta; con un error de "token" o de inicio de sesión, avisa a quien administra el conector.`;
+
 export function registerTools(server) {
+  server.registerTool(
+    "guia",
+    {
+      title: "Guía de uso del conector",
+      description:
+        "Devuelve la guía de uso del conector para el equipo (qué se puede pedir, consejos, límites, qué hacer si falla) y el enlace a la guía completa con ejemplos. Úsala cuando el usuario pregunte cómo funciona el conector, qué puede hacer con SharePoint, o no entienda algo del conector. Muéstrale el enlace a la guía completa.",
+      inputSchema: {},
+    },
+    async () => ok({ guia: GUIDE_TEXT, guiaCompleta: GUIDE_URL })
+  );
+
   if (AUTH_MODE === "delegated") {
     server.registerTool(
       "whoami",

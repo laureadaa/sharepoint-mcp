@@ -18,7 +18,15 @@ if (startupErrors.length) {
 }
 
 function buildServer() {
-  const server = new McpServer({ name: "sharepoint-onedrive-mcp", version: "1.0.0" });
+  const server = new McpServer(
+    { name: "sharepoint-onedrive-mcp", version: "1.0.0" },
+    {
+      instructions:
+        "Conector al SharePoint del despacho (Legaltax). Si el usuario pregunta cómo funciona el conector, qué puede " +
+        "pedir o no entiende algo, llama a la herramienta `guia` y muéstrale su contenido y el enlace a la guía completa. " +
+        "Antes de borrar, restaurar versiones o revocar enlaces, confirma con el usuario.",
+    }
+  );
   registerTools(server);
   return server;
 }

@@ -271,7 +271,7 @@ export const graph = {
         grantedTo:
           who?.user?.displayName || who?.user?.email || who?.siteGroup?.displayName || who?.group?.displayName ||
           who?.siteUser?.displayName || undefined,
-        email: who?.user?.email || who?.siteUser?.loginName?.split("|").pop(),
+        email: [who?.user?.email, who?.siteUser?.loginName?.split("|").pop()].find((e) => e?.includes("@")),
         link: p.link && {
           type: p.link.type,
           scope: p.link.scope, // anonymous = cualquiera con el enlace
@@ -441,7 +441,8 @@ async function microsoftSearch(queryString, size = 25, sortProperties) {
     const r = h.resource || {};
     return {
       name: r.name,
-      isFolder: !!r.folder,
+      // Microsoft Search no devuelve la faceta `folder`: sin `file`, tamaño 0 y sin extensión → carpeta.
+      isFolder: !!r.folder || (!r.file && !r.size && !/\.[a-z0-9]{1,5}$/i.test(r.name || "")),
       size: r.size,
       webUrl: r.webUrl,
       driveId: r.parentReference?.driveId,
