@@ -29,7 +29,7 @@ const refDesc =
 const driveDesc =
   "ID del drive (biblioteca de documentos). Usa 'me' para tu OneDrive (sólo en modo delegado), o un driveId obtenido con list_drives.";
 
-export const GUIDE_URL = "https://claude.ai/artifact/M6MM16YqBUtu5F9yoXqD9b";
+export const GUIDE_URL = "https://claude.ai/artifact/2Tj9xsL7gi5LQShRfhnrPE";
 
 const GUIDE_TEXT = `Guía del conector SharePoint (versión completa con ejemplos: ${GUIDE_URL})
 
