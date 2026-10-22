@@ -242,7 +242,7 @@ export function registerTools(server) {
     {
       title: "Lo último modificado",
       description:
-        "Archivos y carpetas modificados en los últimos N días, del más reciente al más antiguo, con quién los modificó. En todo el despacho, o sólo dentro de una carpeta (driveId + ref). Ej.: '¿qué se ha movido esta semana en CORECO?'.",
+        "Archivos y carpetas modificados en los últimos N días, del más reciente al más antiguo, con quién los modificó. En todo el despacho, o sólo dentro de una carpeta (driveId + ref). Ej.: '¿qué se ha movido esta semana en este cliente?'.",
       inputSchema: {
         days: z.number().int().min(1).max(365).default(7).describe("Ventana en días."),
         driveId: z.string().optional().describe("Limitar a una carpeta: drive de esa carpeta."),
