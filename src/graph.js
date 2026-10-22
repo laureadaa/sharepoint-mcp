@@ -186,40 +186,116 @@ export const graph = {
   // Búsqueda GLOBAL en TODO: OneDrive + todas las bibliotecas de SharePoint a la vez.
   // Usa la API de Microsoft Search. Encuentra archivos y carpetas estén donde estén.
   async searchAll(queryText, size = 25) {
-    const body = {
-      requests: [
-        {
-          entityTypes: ["driveItem"],
-          query: { queryString: queryText },
-          from: 0,
-          size: Math.min(Math.max(size, 1), 50),
-        },
-      ],
+    return microsoftSearch(queryText, size);
+  },
+
+  // Lo último modificado: en todo el despacho o dentro de una carpeta, ordenado del más reciente al más antiguo.
+  async recentChanges({ days = 7, driveId, ref, query, size = 25 }) {
+    const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
+    const parts = [`LastModifiedTime>=${since}`];
+    if (driveId) {
+      const folder = await graphJson(itemSelector(driveId, ref), { query: { $select: "webUrl,folder" } });
+      if (!folder.folder) throw new Error("`ref` debe ser una carpeta.");
+      parts.push(`path:"${decodeURI(folder.webUrl)}"`);
+    }
+    if (query) parts.push(`(${query})`);
+    return microsoftSearch(parts.join(" AND "), size, [{ name: "lastModifiedDateTime", isDescending: true }]);
+  },
+
+  // Hojas de un libro Excel (sólo .xlsx/.xlsm, la API de libros de Graph no admite .xls).
+  async excelSheets(driveId, ref) {
+    const sel = itemSelector(driveId, ref);
+    const data = await graphJson(`${sel}/workbook/worksheets`, { query: { $select: "id,name,position,visibility" } });
+    return (data.value || []).map((w) => ({ name: w.name, position: w.position, visibility: w.visibility, id: w.id }));
+  },
+
+  // Lee una hoja (o un rango A1) de un Excel como tabla: filas y columnas reales.
+  async readExcel(driveId, ref, { sheet, range, maxRows = 500, formatted = true } = {}) {
+    const sel = itemSelector(driveId, ref);
+    const sheets = await this.excelSheets(driveId, ref);
+    if (!sheets.length) throw new Error("El libro no tiene hojas.");
+    const ws = sheet ? sheets.find((s) => s.name.toLowerCase() === sheet.toLowerCase()) : sheets[0];
+    if (!ws) throw new Error(`No existe la hoja '${sheet}'. Hojas disponibles: ${sheets.map((s) => s.name).join(", ")}`);
+    const wsPath = `${sel}/workbook/worksheets/${encodeURIComponent(ws.id)}`;
+    const rangePath = range
+      ? `${wsPath}/range(address='${range.replace(/'/g, "''")}')`
+      : `${wsPath}/usedRange(valuesOnly=true)`;
+    const data = await graphJson(rangePath, { query: { $select: "address,rowCount,columnCount,values,text" } });
+    const rows = (formatted ? data.text : data.values) || [];
+    return {
+      sheet: ws.name,
+      sheets: sheets.map((s) => s.name),
+      address: data.address,
+      rowCount: data.rowCount,
+      columnCount: data.columnCount,
+      truncated: rows.length > maxRows,
+      rows: rows.slice(0, maxRows),
     };
-    const data = await graphJson("/search/query", { method: "POST", json: body });
-    const hits = data?.value?.[0]?.hitsContainers?.[0]?.hits || [];
-    let results = hits.map((h) => {
-      const r = h.resource || {};
+  },
+
+  // Historial de versiones de un archivo.
+  async listVersions(driveId, ref) {
+    const sel = itemSelector(driveId, ref);
+    const { items } = await graphList(`${sel}/versions`, undefined, 200);
+    return items.map((v) => ({
+      versionId: v.id,
+      lastModified: v.lastModifiedDateTime,
+      modifiedBy: v.lastModifiedBy?.user?.displayName || v.lastModifiedBy?.user?.email,
+      size: v.size,
+    }));
+  },
+
+  // Restaura una versión anterior (SharePoint crea una versión nueva con ese contenido; no se pierde nada).
+  async restoreVersion(driveId, ref, versionId) {
+    const sel = itemSelector(driveId, ref);
+    const res = await graphFetch(`${sel}/versions/${encodeURIComponent(versionId)}/restoreVersion`, { method: "POST" });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`Graph ${res.status} al restaurar versión: ${t}`);
+    }
+    return { restored: true, versionId, item: await this.getItem(driveId, ref) };
+  },
+
+  // Quién tiene acceso a un archivo o carpeta: usuarios, grupos y enlaces compartidos.
+  async listPermissions(driveId, ref) {
+    const sel = itemSelector(driveId, ref);
+    const { items } = await graphList(`${sel}/permissions`, undefined, 500);
+    return items.map((p) => {
+      const who = p.grantedToV2 || p.grantedTo;
+      const identities = p.grantedToIdentitiesV2 || p.grantedToIdentities || [];
       return {
-        name: r.name,
-        isFolder: !!r.folder,
-        size: r.size,
-        webUrl: r.webUrl,
-        driveId: r.parentReference?.driveId,
-        itemId: r.id,
-        path: r.parentReference?.path,
-        lastModified: r.lastModifiedDateTime,
+        permissionId: p.id,
+        roles: p.roles,
+        kind: p.link ? "enlace" : "directo",
+        inherited: !!p.inheritedFrom,
+        grantedTo:
+          who?.user?.displayName || who?.user?.email || who?.siteGroup?.displayName || who?.group?.displayName ||
+          who?.siteUser?.displayName || undefined,
+        email: who?.user?.email || who?.siteUser?.loginName?.split("|").pop(),
+        link: p.link && {
+          type: p.link.type,
+          scope: p.link.scope, // anonymous = cualquiera con el enlace
+          webUrl: p.link.webUrl,
+          expires: p.expirationDateTime,
+          hasPassword: p.hasPassword,
+          sharedWith: identities.map((i) => i.user?.displayName || i.user?.email).filter(Boolean),
+        },
       };
     });
-    // Si hay lista blanca de drives, respétala también en la búsqueda global.
-    if (ALLOWED_DRIVE_IDS.length > 0) {
-      results = results.filter((r) => r.driveId && ALLOWED_DRIVE_IDS.includes(r.driveId));
+  },
+
+  // Revoca un enlace compartido. Sólo enlaces (no usuarios ni grupos) y sólo los no heredados.
+  async revokeShareLink(driveId, ref, permissionId) {
+    const sel = itemSelector(driveId, ref);
+    const p = await graphJson(`${sel}/permissions/${encodeURIComponent(permissionId)}`);
+    if (!p.link) throw new Error("Ese permiso no es un enlace compartido; esta herramienta sólo revoca enlaces.");
+    if (p.inheritedFrom) throw new Error("El enlace se hereda de una carpeta superior: revócalo en esa carpeta.");
+    const res = await graphFetch(`${sel}/permissions/${encodeURIComponent(permissionId)}`, { method: "DELETE" });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`Graph ${res.status} al revocar el enlace: ${t}`);
     }
-    // Si se bloquea el OneDrive personal, oculta sus resultados (URLs de OneDrive: .../personal/...).
-    if (BLOCK_ONEDRIVE) {
-      results = results.filter((r) => !(r.webUrl || "").toLowerCase().includes("/personal/"));
-    }
-    return results;
+    return { revoked: true, permissionId, scope: p.link.scope, type: p.link.type };
   },
 
   // Lee un archivo. format:
@@ -349,6 +425,42 @@ export const graph = {
     return { url: data?.link?.webUrl, type, scope: data?.link?.scope };
   },
 };
+
+// Microsoft Search sobre driveItem, aplicando las mismas restricciones de drives que el resto.
+async function microsoftSearch(queryString, size = 25, sortProperties) {
+  const request = {
+    entityTypes: ["driveItem"],
+    query: { queryString },
+    from: 0,
+    size: Math.min(Math.max(size, 1), 50),
+  };
+  if (sortProperties) request.sortProperties = sortProperties;
+  const data = await graphJson("/search/query", { method: "POST", json: { requests: [request] } });
+  const hits = data?.value?.[0]?.hitsContainers?.[0]?.hits || [];
+  let results = hits.map((h) => {
+    const r = h.resource || {};
+    return {
+      name: r.name,
+      isFolder: !!r.folder,
+      size: r.size,
+      webUrl: r.webUrl,
+      driveId: r.parentReference?.driveId,
+      itemId: r.id,
+      path: r.parentReference?.path,
+      lastModified: r.lastModifiedDateTime,
+      modifiedBy: r.lastModifiedBy?.user?.displayName,
+    };
+  });
+  // Si hay lista blanca de drives, respétala también en la búsqueda global.
+  if (ALLOWED_DRIVE_IDS.length > 0) {
+    results = results.filter((r) => r.driveId && ALLOWED_DRIVE_IDS.includes(r.driveId));
+  }
+  // Si se bloquea el OneDrive personal, oculta sus resultados (URLs de OneDrive: .../personal/...).
+  if (BLOCK_ONEDRIVE) {
+    results = results.filter((r) => !(r.webUrl || "").toLowerCase().includes("/personal/"));
+  }
+  return results;
+}
 
 // Formatos que SharePoint sabe convertir a PDF (?format=pdf).
 const PDF_CONVERTIBLE = new Set([

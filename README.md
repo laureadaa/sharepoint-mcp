@@ -11,8 +11,9 @@ consentimiento de administrador).
 
 ## Herramientas incluidas
 
-`whoami`, `search_sites`, `list_drives`, `list_children`, `get_item`, `search_files`, `read_file`,
-`upload_file`, `create_folder`, `delete_item`, `move_item`, `copy_item`, `create_share_link`.
+`whoami`, `search_sites`, `list_drives`, `list_children`, `get_item`, `search_files`, `search_all`,
+`read_file`, `read_excel`, `recent_changes`, `list_versions`, `restore_version`, `list_permissions`,
+`revoke_share_link`, `upload_file`, `create_folder`, `delete_item`, `move_item`, `copy_item`, `create_share_link`.
 
 ---
 

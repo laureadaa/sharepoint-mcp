@@ -180,6 +180,121 @@ export function registerTools(server) {
   );
 
   server.registerTool(
+    "read_excel",
+    {
+      title: "Leer Excel como tabla",
+      description:
+        "Lee una hoja de un Excel (.xlsx/.xlsm) como tabla: filas y columnas reales, con los valores tal como se ven en Excel. Sin `sheet` lee la primera hoja y devuelve también la lista de hojas. Usa `range` (ej. 'A1:F40') para leer sólo una parte. Ideal para sumas y saldos, libros de IVA, modelos…",
+      inputSchema: {
+        driveId: z.string().describe(driveDesc),
+        ref: z.string().describe(refDesc),
+        sheet: z.string().optional().describe("Nombre de la hoja (por defecto la primera)."),
+        range: z.string().optional().describe("Rango en formato A1, ej. 'A1:F40'. Por defecto, todo lo usado de la hoja."),
+        max_rows: z.number().int().min(1).max(5000).default(500).describe("Máximo de filas a devolver."),
+        formatted: z
+          .boolean()
+          .default(true)
+          .describe("true: valores con formato de Excel (1.234,56 €, fechas). false: valores en bruto."),
+      },
+    },
+    async ({ driveId, ref, sheet, range, max_rows, formatted }) => {
+      try {
+        return ok(await graph.readExcel(driveId, ref, { sheet, range, maxRows: max_rows, formatted }));
+      } catch (e) {
+        return fail(e);
+      }
+    }
+  );
+
+  server.registerTool(
+    "recent_changes",
+    {
+      title: "Lo último modificado",
+      description:
+        "Archivos y carpetas modificados en los últimos N días, del más reciente al más antiguo, con quién los modificó. En todo el despacho, o sólo dentro de una carpeta (driveId + ref). Ej.: '¿qué se ha movido esta semana en CORECO?'.",
+      inputSchema: {
+        days: z.number().int().min(1).max(365).default(7).describe("Ventana en días."),
+        driveId: z.string().optional().describe("Limitar a una carpeta: drive de esa carpeta."),
+        ref: z.string().optional().describe("Limitar a una carpeta: ruta o id de la carpeta."),
+        query: z.string().optional().describe("Texto adicional para filtrar (ej. 'IVA', 'contrato')."),
+        size: z.number().int().min(1).max(50).default(25).describe("Número máximo de resultados."),
+      },
+    },
+    async ({ days, driveId, ref, query, size }) => {
+      try {
+        return ok(await graph.recentChanges({ days, driveId, ref, query, size }));
+      } catch (e) {
+        return fail(e);
+      }
+    }
+  );
+
+  server.registerTool(
+    "list_versions",
+    {
+      title: "Historial de versiones",
+      description: "Lista las versiones de un archivo: cuándo se modificó, quién lo hizo y el tamaño de cada versión.",
+      inputSchema: { driveId: z.string().describe(driveDesc), ref: z.string().describe(refDesc) },
+    },
+    async ({ driveId, ref }) => {
+      try {
+        return ok(await graph.listVersions(driveId, ref));
+      } catch (e) {
+        return fail(e);
+      }
+    }
+  );
+
+  server.registerTool(
+    "restore_version",
+    {
+      title: "Restaurar versión anterior",
+      description:
+        "Restaura una versión anterior de un archivo (versionId de list_versions). SharePoint guarda la versión actual en el historial, así que no se pierde nada. Confirma con el usuario antes de usarla.",
+      inputSchema: {
+        driveId: z.string().describe(driveDesc),
+        ref: z.string().describe(refDesc),
+        versionId: z.string().describe("Id de la versión a restaurar (de list_versions)."),
+      },
+    },
+    async ({ driveId, ref, versionId }) =>
+      write("restore_version", { driveId, ref, versionId }, () => graph.restoreVersion(driveId, ref, versionId))
+  );
+
+  server.registerTool(
+    "list_permissions",
+    {
+      title: "Quién tiene acceso",
+      description:
+        "Muestra quién tiene acceso a un archivo o carpeta: usuarios, grupos y enlaces compartidos (con su alcance: 'anonymous' = cualquiera con el enlace, 'organization' = toda la empresa, 'users' = personas concretas) y si el permiso es heredado.",
+      inputSchema: { driveId: z.string().describe(driveDesc), ref: z.string().describe(refDesc) },
+    },
+    async ({ driveId, ref }) => {
+      try {
+        return ok(await graph.listPermissions(driveId, ref));
+      } catch (e) {
+        return fail(e);
+      }
+    }
+  );
+
+  server.registerTool(
+    "revoke_share_link",
+    {
+      title: "Revocar enlace compartido",
+      description:
+        "Elimina un enlace compartido de un archivo o carpeta (permissionId de list_permissions). Sólo enlaces, no usuarios ni grupos, y sólo si no es heredado. Confirma con el usuario antes de usarla.",
+      inputSchema: {
+        driveId: z.string().describe(driveDesc),
+        ref: z.string().describe(refDesc),
+        permissionId: z.string().describe("Id del permiso de tipo enlace (de list_permissions)."),
+      },
+    },
+    async ({ driveId, ref, permissionId }) =>
+      write("revoke_share_link", { driveId, ref, permissionId }, () => graph.revokeShareLink(driveId, ref, permissionId))
+  );
+
+  server.registerTool(
     "upload_file",
     {
       title: "Subir / crear / sobrescribir archivo",
