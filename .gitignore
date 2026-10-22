@@ -4,6 +4,5 @@ node_modules
 server.log
 server.pid
 *.exe
-.fly
 INFORME-SharePoint.*
 GUIA-SharePoint.*
