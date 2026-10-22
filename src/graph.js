@@ -409,7 +409,18 @@ export const graph = {
     if (newName) body.name = newName;
     const res = await graphFetch(`${sel}/copy`, { method: "POST", json: body });
     if (res.status === 202) {
-      return { accepted: true, monitorUrl: res.headers.get("location") };
+      // La URL de seguimiento lleva un permiso temporal (tempauth): se consulta aquí y nunca se devuelve.
+      const monitor = res.headers.get("location");
+      for (let i = 0; monitor && i < 10; i++) {
+        await sleep(1000);
+        const m = await fetch(monitor, { redirect: "manual" }).catch(() => null);
+        if (!m) break;
+        if (m.status === 303) return { copied: true, status: "completed" };
+        const s = await m.json().catch(() => ({}));
+        if (s.status === "completed") return { copied: true, status: "completed", itemId: s.resourceId };
+        if (s.status === "failed") throw new Error(`La copia ha fallado: ${s.error?.message || "error desconocido"}`);
+      }
+      return { copied: false, status: "inProgress", note: "La copia sigue en curso en SharePoint (carpetas grandes tardan más)." };
     }
     const t = await res.text().catch(() => "");
     throw new Error(`Graph ${res.status} al copiar: ${t}`);
